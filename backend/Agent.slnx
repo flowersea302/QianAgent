@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="Agent.Abstract/Agent.Abstract.csproj" />
+  <Project Path="Agent.Models/Agent.Models.csproj" />
+  <Project Path="Agent.Tools/Agent.Tools.csproj" />
+  <Project Path="Agent/Agent.csproj" />
+  <Project Path="Agent.Host/Agent.Host.csproj" />
+</Solution>

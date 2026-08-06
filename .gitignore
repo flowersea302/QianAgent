@@ -1,0 +1,10 @@
+.vs/
+**/bin/
+**/obj/
+backend/build-verify/
+desktop/node_modules/
+desktop/dist/
+desktop/*.log
+backend/Agent/*.docx
+*.user
+*.suo
