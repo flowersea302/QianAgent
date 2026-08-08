@@ -32,17 +32,24 @@ namespace Agent.Host
             return IsValidConversationId(conversationId) && File.Exists(GetSessionFilePath(conversationId));
         }
 
-        public async Task<AgentSession> LoadSessionAsync(string conversationId, AIAgent agent)
+        public async Task<ConversationSessionLoadResult> LoadSessionAsync(string conversationId, AIAgent agent)
         {
             EnsureValidConversationId(conversationId);
             var sessionFilePath = GetSessionFilePath(conversationId);
             if (!File.Exists(sessionFilePath))
             {
-                return await agent.CreateSessionAsync();
+                return new ConversationSessionLoadResult(await agent.CreateSessionAsync(), false);
             }
 
-            using JsonDocument document = JsonDocument.Parse(await File.ReadAllTextAsync(sessionFilePath));
-            return await agent.DeserializeSessionAsync(document.RootElement);
+            try
+            {
+                using JsonDocument document = JsonDocument.Parse(await File.ReadAllTextAsync(sessionFilePath));
+                return new ConversationSessionLoadResult(await agent.DeserializeSessionAsync(document.RootElement), true);
+            }
+            catch (Exception exception) when (exception is JsonException or InvalidOperationException or NotSupportedException)
+            {
+                return new ConversationSessionLoadResult(await agent.CreateSessionAsync(), false);
+            }
         }
 
         public async Task SaveSessionAsync(string conversationId, AIAgent agent, AgentSession session)
@@ -77,15 +84,33 @@ namespace Agent.Host
         public async Task RenameConversationAsync(string conversationId, string title)
         {
             EnsureValidConversationId(conversationId);
-            title = title.Trim();
-            if (title.Length is < 1 or > 80)
+            var context = await LoadContextAsync(conversationId);
+            context.Title = ValidateTitle(title);
+            context.TitleIsManual = true;
+            await SaveContextAsync(conversationId, context);
+        }
+
+        public async Task<bool> SetAutomaticTitleAsync(string conversationId, string title)
+        {
+            EnsureValidConversationId(conversationId);
+            var context = await LoadContextAsync(conversationId);
+            if (context.TitleIsManual || !string.IsNullOrWhiteSpace(context.Title))
             {
-                throw new ArgumentException("Conversation title must contain 1 to 80 characters.", nameof(title));
+                return false;
             }
 
-            var context = await LoadContextAsync(conversationId);
-            context.Title = title;
+            context.Title = ValidateTitle(title);
             await SaveContextAsync(conversationId, context);
+            return true;
+        }
+
+        public Task DeleteConversationAsync(string conversationId)
+        {
+            EnsureValidConversationId(conversationId);
+            DeleteIfExists(GetSessionFilePath(conversationId));
+            DeleteIfExists(GetContextFilePath(conversationId));
+            DeleteIfExists(GetTranscriptFilePath(conversationId));
+            return Task.CompletedTask;
         }
 
         public async Task<IReadOnlyList<ConversationMessage>> LoadTranscriptAsync(string conversationId)
@@ -148,7 +173,7 @@ namespace Agent.Host
         {
             EnsureValidConversationId(conversationId);
             var context = await LoadContextAsync(conversationId);
-            return new ConversationMetadata(context.Title, context.WorkspaceRoot);
+            return new ConversationMetadata(context.Title, context.WorkspaceRoot, context.TitleIsManual);
         }
 
         private string GetSessionFilePath(string conversationId) => Path.Combine(_conversationDirectory, $"{conversationId}.json");
@@ -156,6 +181,25 @@ namespace Agent.Host
         private string GetContextFilePath(string conversationId) => Path.Combine(_contextDirectory, $"{conversationId}.json");
 
         private string GetTranscriptFilePath(string conversationId) => Path.Combine(_transcriptDirectory, $"{conversationId}.json");
+
+        private static void DeleteIfExists(string filePath)
+        {
+            if (File.Exists(filePath))
+            {
+                File.Delete(filePath);
+            }
+        }
+
+        private static string ValidateTitle(string title)
+        {
+            title = title.Trim();
+            if (title.Length is < 1 or > 80)
+            {
+                throw new ArgumentException("Conversation title must contain 1 to 80 characters.", nameof(title));
+            }
+
+            return title;
+        }
 
         private static async Task WriteAtomicallyAsync(string filePath, string content)
         {
@@ -204,11 +248,15 @@ namespace Agent.Host
         {
             public string? Title { get; set; }
 
+            public bool TitleIsManual { get; set; }
+
             public string? WorkspaceRoot { get; set; }
         }
     }
 
     internal sealed record ConversationMessage(string Role, string Content);
 
-    internal sealed record ConversationMetadata(string? Title, string? WorkspaceRoot);
+    internal sealed record ConversationSessionLoadResult(AgentSession Session, bool WasRestored);
+
+    internal sealed record ConversationMetadata(string? Title, string? WorkspaceRoot, bool TitleIsManual);
 }

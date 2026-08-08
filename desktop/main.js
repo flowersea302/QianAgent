@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme } = require("electron");
 const { spawn } = require("node:child_process");
 const path = require("node:path");
 const readline = require("node:readline");
@@ -6,6 +6,16 @@ const crypto = require("node:crypto");
 
 let mainWindow;
 let hostProcess;
+let titleBarTheme = "system";
+
+function updateWindowTheme() {
+  if (!mainWindow) {
+    return;
+  }
+
+  const useDarkTheme = titleBarTheme === "dark" || (titleBarTheme === "system" && nativeTheme.shouldUseDarkColors);
+  mainWindow.setBackgroundColor(useDarkTheme ? "#191a1d" : "#f7f7f8");
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -14,6 +24,8 @@ function createWindow() {
     minWidth: 980,
     minHeight: 640,
     backgroundColor: "#f6f7fb",
+    frame: false,
+    icon: path.join(__dirname, "resources", "qian-agent.png"),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -22,6 +34,7 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, "dist", "index.html"));
+  updateWindowTheme();
 }
 
 function startHost() {
@@ -29,7 +42,9 @@ function startHost() {
     return;
   }
 
-  const hostPath = path.resolve(__dirname, "..", "backend", "Agent.Host", "bin", "Debug", "net10.0", "Agent.Host.exe");
+  const hostPath = app.isPackaged
+    ? path.join(process.resourcesPath, "backend", "Agent.Host.exe")
+    : path.resolve(__dirname, "..", "backend", "Agent.Host", "bin", "Debug", "net10.0-windows", "Agent.Host.exe");
   hostProcess = spawn(hostPath, [], { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
 
   readline.createInterface({ input: hostProcess.stdout }).on("line", (line) => {
@@ -66,9 +81,34 @@ ipcMain.handle("workspace:select", async () => {
   return result.canceled ? null : result.filePaths[0];
 });
 
+ipcMain.handle("window:set-theme", (_, theme) => {
+  if (["light", "dark", "system"].includes(theme)) {
+    titleBarTheme = theme;
+    updateWindowTheme();
+  }
+});
+
+ipcMain.handle("window:minimize", () => mainWindow?.minimize());
+ipcMain.handle("window:toggle-maximize", () => {
+  if (mainWindow?.isMaximized()) {
+    mainWindow.unmaximize();
+  }
+  else {
+    mainWindow?.maximize();
+  }
+});
+ipcMain.handle("window:close", () => mainWindow?.close());
+
 app.whenReady().then(() => {
+  Menu.setApplicationMenu(null);
   createWindow();
   startHost();
+});
+
+nativeTheme.on("updated", () => {
+  if (titleBarTheme === "system") {
+    updateWindowTheme();
+  }
 });
 
 app.on("window-all-closed", () => {

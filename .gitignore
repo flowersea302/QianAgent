@@ -2,8 +2,11 @@
 **/bin/
 **/obj/
 backend/build-verify/
+backend/build-verify-parallel/
+backend/publish/
 desktop/node_modules/
 desktop/dist/
+desktop/release/
 desktop/*.log
 backend/Agent/*.docx
 *.user

@@ -98,6 +98,15 @@ namespace Agent.Tools
         public static string WriteCode([Description("工作区内的相对文件路径")] string relativePath, [Description("写入文件的完整文本内容")] string content)
         {
             var path = ResolveFile(relativePath, allowMissing: true);
+            RequireApproval(
+                "write_code",
+                $"Write {Path.GetRelativePath(WorkspaceRoot, path)}",
+                new Dictionary<string, string>
+                {
+                    ["path"] = Path.GetRelativePath(WorkspaceRoot, path),
+                    ["contentLength"] = content.Length.ToString(),
+                    ["contentPreview"] = content.Length <= 500 ? content : $"{content[..500]}\n..."
+                });
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             var temporaryPath = $"{path}.tmp";
             File.WriteAllText(temporaryPath, content);

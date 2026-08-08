@@ -26,6 +26,16 @@ namespace Agent.Tools
             }
 
             timeoutMilliseconds = Math.Clamp(timeoutMilliseconds, 1, 300000);
+            RequireApproval(
+                "execute_python",
+                $"Execute {Path.GetRelativePath(WorkspaceRoot, scriptPath)}",
+                new Dictionary<string, string>
+                {
+                    ["scriptPath"] = Path.GetRelativePath(WorkspaceRoot, scriptPath),
+                    ["arguments"] = string.Join(" ", arguments ?? []),
+                    ["pythonExecutable"] = pythonExecutable,
+                    ["timeoutMilliseconds"] = timeoutMilliseconds.ToString()
+                });
 
             var processStartInfo = new ProcessStartInfo
             {
@@ -78,6 +88,116 @@ namespace Agent.Tools
             if (process.ExitCode != 0)
             {
                 errorBuilder.AppendLine($"Python 进程退出码：{process.ExitCode}");
+            }
+
+            return new CmdExcuteResult
+            {
+                OutPut = outputBuilder.ToString(),
+                Error = errorBuilder.ToString()
+            };
+        }
+
+        [Description("Executes a temporary Python script. The script is removed automatically after execution, including when it fails or times out. Use this for one-off automation instead of creating a Python file in the workspace.")]
+        public static CmdExcuteResult ExecuteTemporaryPythonScript(
+            [Description("Complete Python script content to execute once")] string scriptContent,
+            [Description("Arguments passed to the Python script")] string[]? arguments = null,
+            [Description("Python interpreter command, defaults to python")] string pythonExecutable = "python",
+            [Description("Execution timeout in milliseconds, defaults to 30000 and is capped at 300000")] int timeoutMilliseconds = 30000)
+        {
+            if (string.IsNullOrWhiteSpace(scriptContent))
+            {
+                throw new ArgumentException("Python script content cannot be empty.", nameof(scriptContent));
+            }
+
+            var temporaryScriptPath = Path.Combine(Path.GetTempPath(), $"qian-agent-{Guid.NewGuid():N}.py");
+            File.WriteAllText(temporaryScriptPath, scriptContent, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+            try
+            {
+                return ExecutePythonFile(temporaryScriptPath, "temporary script", arguments, pythonExecutable, timeoutMilliseconds);
+            }
+            finally
+            {
+                if (File.Exists(temporaryScriptPath))
+                {
+                    File.Delete(temporaryScriptPath);
+                }
+            }
+        }
+
+        private static CmdExcuteResult ExecutePythonFile(
+            string scriptPath,
+            string scriptDescription,
+            string[]? arguments,
+            string pythonExecutable,
+            int timeoutMilliseconds)
+        {
+            if (string.IsNullOrWhiteSpace(pythonExecutable))
+            {
+                throw new ArgumentException("Python interpreter command cannot be empty.", nameof(pythonExecutable));
+            }
+
+            timeoutMilliseconds = Math.Clamp(timeoutMilliseconds, 1, 300000);
+            RequireApproval(
+                "execute_python",
+                $"Execute {scriptDescription}",
+                new Dictionary<string, string>
+                {
+                    ["scriptPath"] = scriptDescription,
+                    ["arguments"] = string.Join(" ", arguments ?? []),
+                    ["pythonExecutable"] = pythonExecutable,
+                    ["timeoutMilliseconds"] = timeoutMilliseconds.ToString()
+                });
+
+            var processStartInfo = new ProcessStartInfo
+            {
+                FileName = pythonExecutable,
+                WorkingDirectory = Path.GetDirectoryName(scriptPath)!,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8
+            };
+            processStartInfo.ArgumentList.Add(scriptPath);
+            foreach (var argument in arguments ?? [])
+            {
+                processStartInfo.ArgumentList.Add(argument);
+            }
+
+            using var process = new Process { StartInfo = processStartInfo };
+            var outputBuilder = new StringBuilder();
+            var errorBuilder = new StringBuilder();
+            process.OutputDataReceived += (_, eventArgs) =>
+            {
+                if (eventArgs.Data is not null)
+                {
+                    outputBuilder.AppendLine(eventArgs.Data);
+                }
+            };
+            process.ErrorDataReceived += (_, eventArgs) =>
+            {
+                if (eventArgs.Data is not null)
+                {
+                    errorBuilder.AppendLine(eventArgs.Data);
+                }
+            };
+
+            process.Start();
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+            if (!process.WaitForExit(timeoutMilliseconds))
+            {
+                process.Kill(entireProcessTree: true);
+                process.WaitForExit();
+                throw new TimeoutException($"Python script timed out after {timeoutMilliseconds} ms.");
+            }
+
+            process.WaitForExit();
+            if (process.ExitCode != 0)
+            {
+                errorBuilder.AppendLine($"Python process exit code: {process.ExitCode}");
             }
 
             return new CmdExcuteResult
