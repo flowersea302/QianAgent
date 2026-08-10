@@ -46,7 +46,10 @@ namespace Agent.Tools
 
                 try
                 {
-                    return ExecutePythonFile(temporaryScriptPath, "temporary script", arguments, pythonExecutable, timeoutMilliseconds);
+                    var workingDirectory = string.IsNullOrWhiteSpace(GetWorkSpaceRoot())
+                        ? Path.GetTempPath()
+                        : GetWorkSpaceRoot();
+                    return ExecutePythonFile(temporaryScriptPath, "temporary script", arguments, pythonExecutable, timeoutMilliseconds, workingDirectory);
                 }
                 finally
                 {
@@ -63,7 +66,8 @@ namespace Agent.Tools
             string scriptDescription,
             string[]? arguments,
             string pythonExecutable,
-            int timeoutMilliseconds)
+            int timeoutMilliseconds,
+            string? workingDirectory = null)
         {
             if (string.IsNullOrWhiteSpace(pythonExecutable))
             {
@@ -85,7 +89,7 @@ namespace Agent.Tools
             var processStartInfo = new ProcessStartInfo
             {
                 FileName = pythonExecutable,
-                WorkingDirectory = Path.GetDirectoryName(scriptPath)!,
+                WorkingDirectory = workingDirectory ?? Path.GetDirectoryName(scriptPath)!,
                 UseShellExecute = false,
                 RedirectStandardInput = true,
                 RedirectStandardOutput = true,

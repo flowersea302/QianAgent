@@ -34,6 +34,9 @@ namespace Agent.Tools
                 var processStartInfo = new ProcessStartInfo
             {
                 FileName = powerShellExecutable,
+                WorkingDirectory = string.IsNullOrWhiteSpace(GetWorkSpaceRoot())
+                    ? Directory.GetCurrentDirectory()
+                    : GetWorkSpaceRoot(),
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,

@@ -59,7 +59,13 @@ namespace Agent.Tools
         [Description("获取当前工作目录")]
         public static string GetCurrentPath()
         {
-            return RunWithToolProgress("get_current_path", "正在确认当前目录", Directory.GetCurrentDirectory);
+            return RunWithToolProgress("get_current_path", "正在确认当前目录", () =>
+            {
+                var workspaceRoot = GetWorkSpaceRoot();
+                return string.IsNullOrWhiteSpace(workspaceRoot)
+                    ? Directory.GetCurrentDirectory()
+                    : workspaceRoot;
+            });
         }
 
         private static WorkSpaceContext GetWorkSpaceContext() =>
