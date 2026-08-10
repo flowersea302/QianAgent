@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import MarkdownIt from "markdown-it";
-import { Check, ChevronRight, Copy, Eye, ListChecks, Minus, Monitor, Moon, Pencil, Send, Settings, Shield, ShieldCheck, Sparkles, SquarePen, Sun, X } from "@lucide/vue";
+import { Check, ChevronRight, Copy, Eye, ListChecks, Minus, Monitor, Moon, Pencil, Plus, Send, Settings, Shield, ShieldCheck, Sparkles, SquarePen, Sun, X } from "@lucide/vue";
 import appMarkUrl from "../resources/qian-agent-mark.svg";
 import appMarkWhiteUrl from "../resources/qian-agent-mark-white.svg";
 
@@ -1245,13 +1245,16 @@ onBeforeUnmount(() => {
             <button v-if="isStreaming && !prompt.trim()" class="stop-send-button" type="button" title="停止当前任务" @click="cancelChat">■</button>
             <button v-else type="submit" :disabled="!initialized || !prompt.trim()" :title="isStreaming ? '加入任务队列' : '发送'">↑</button>
           </div>
-          <div class="composer-approval-control">
-          <button class="approval-mode-trigger" type="button" :title="`当前审批模式：${approvalModeLabel}`" @click="approvalMenuOpen = !approvalMenuOpen"><ShieldCheck v-if="approvalMode !== 'ask'" :size="14" /><Shield v-else :size="14" /><span>{{ approvalModeLabel }}</span></button>
-          <section v-if="approvalMenuOpen" class="approval-mode-menu">
-            <button type="button" :class="{ active: approvalMode === 'ask' }" @click="setApprovalMode('ask')"><Shield :size="16" /><span><strong>请求批准</strong><small>写入文件或运行脚本前请求确认</small></span><Check v-if="approvalMode === 'ask'" :size="16" /></button>
-            <button type="button" :class="{ active: approvalMode === 'write' }" @click="setApprovalMode('write')"><ShieldCheck :size="16" /><span><strong>自动批准文件操作</strong><small>仅自动允许写入工作区文件</small></span><Check v-if="approvalMode === 'write'" :size="16" /></button>
-            <button type="button" :class="{ active: approvalMode === 'all' }" @click="setApprovalMode('all')"><ShieldCheck :size="16" /><span><strong>自动批准所有工具</strong><small>后续操作不再重复确认</small></span><Check v-if="approvalMode === 'all'" :size="16" /></button>
-          </section>
+          <div class="composer-left-controls">
+            <button class="workspace-select-trigger" type="button" :disabled="!activeConversationId" :title="workspaceRoot ? `当前工作区：${workspaceRoot}` : '选择工作区'" @click="selectWorkspace()"><Plus :size="15" /></button>
+            <div class="composer-approval-control">
+              <button class="approval-mode-trigger" type="button" :title="`当前审批模式：${approvalModeLabel}`" @click="approvalMenuOpen = !approvalMenuOpen"><ShieldCheck v-if="approvalMode !== 'ask'" :size="14" /><Shield v-else :size="14" /><span>{{ approvalModeLabel }}</span></button>
+              <section v-if="approvalMenuOpen" class="approval-mode-menu">
+                <button type="button" :class="{ active: approvalMode === 'ask' }" @click="setApprovalMode('ask')"><Shield :size="16" /><span><strong>请求批准</strong><small>写入文件或运行脚本前请求确认</small></span><Check v-if="approvalMode === 'ask'" :size="16" /></button>
+                <button type="button" :class="{ active: approvalMode === 'write' }" @click="setApprovalMode('write')"><ShieldCheck :size="16" /><span><strong>自动批准文件操作</strong><small>仅自动允许写入工作区文件</small></span><Check v-if="approvalMode === 'write'" :size="16" /></button>
+                <button type="button" :class="{ active: approvalMode === 'all' }" @click="setApprovalMode('all')"><ShieldCheck :size="16" /><span><strong>自动批准所有工具</strong><small>后续操作不再重复确认</small></span><Check v-if="approvalMode === 'all'" :size="16" /></button>
+              </section>
+            </div>
           </div>
         </div>
         <section v-if="modelMenuOpen" class="model-menu">

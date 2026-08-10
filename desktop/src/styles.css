@@ -40,6 +40,7 @@
 
 /* Keep all session controls on the bottom row of the composer. */
 .composer-main{display:block}.composer-main textarea{display:block;width:100%;height:24px;min-height:24px;max-height:min(160px,30dvh);overflow-y:hidden}.composer-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:7px}.composer-footer .composer-actions{order:2;align-items:center}.composer-footer .composer-approval-control{order:1;margin-top:0}.composer-footer .composer-actions>button:not(.model-trigger){background:var(--text);color:var(--surface)}.composer-footer .composer-actions>.stop-send-button{background:var(--danger);color:#fff}
+.composer-left-controls{display:flex;min-width:0;align-items:center;gap:3px;order:1}.composer .workspace-select-trigger{display:grid;width:22px;height:22px;flex:none;place-items:center;padding:0;border:0;border-radius:7px;background:transparent;color:var(--muted)}.composer .workspace-select-trigger:hover{background:var(--soft);color:var(--text);filter:none}.composer .workspace-select-trigger:disabled{background:transparent;color:var(--muted)}
 
 /* User-message actions belong below the bubble, aligned to its outgoing edge. */
 .message.user .message-bubble{flex-direction:column;align-items:flex-end;gap:5px}

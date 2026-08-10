@@ -126,6 +126,64 @@ namespace Agent.Tools
             });
         }
 
+        [Description("增量修改当前工作区内的现有代码或配置文件。通过唯一的旧文本定位修改位置，仅替换该部分内容；调用前必须先读取文件并提供足够的上下文以确保旧文本只出现一次。")]
+        public static string EditCode(
+            [Description("工作区内的相对文件路径")] string relativePath,
+            [Description("需要被替换的原始文本。必须在文件中精确且唯一地出现一次")] string oldContent,
+            [Description("替换后的新文本；传入空字符串可删除旧文本")] string newContent)
+        {
+            return RunWithToolProgress("edit_code", $"准备增量修改文件：{relativePath}", () =>
+            {
+                if (string.IsNullOrEmpty(oldContent))
+                {
+                    throw new ArgumentException("待替换的旧文本不能为空。", nameof(oldContent));
+                }
+
+                var path = ResolveFile(relativePath);
+                var originalBytes = File.ReadAllBytes(path);
+                var (encoding, preambleLength) = DetectTextEncoding(originalBytes);
+                var content = encoding.GetString(originalBytes, preambleLength, originalBytes.Length - preambleLength);
+                var lineEnding = DetectLineEnding(content);
+                var normalizedOldContent = NormalizeLineEndings(oldContent, lineEnding);
+                var normalizedNewContent = NormalizeLineEndings(newContent, lineEnding);
+                var matchIndex = content.IndexOf(normalizedOldContent, StringComparison.Ordinal);
+                if (matchIndex < 0)
+                {
+                    throw new InvalidOperationException("未找到待替换的旧文本。请重新读取文件后再尝试修改。");
+                }
+
+                if (content.IndexOf(normalizedOldContent, matchIndex + normalizedOldContent.Length, StringComparison.Ordinal) >= 0)
+                {
+                    throw new InvalidOperationException("待替换的旧文本在文件中出现多次。请提供更多上下文以确保修改位置唯一。");
+                }
+
+                if (normalizedOldContent.Equals(normalizedNewContent, StringComparison.Ordinal))
+                {
+                    return "新旧内容相同，文件未发生变化。";
+                }
+
+                var relativeFilePath = Path.GetRelativePath(WorkspaceRoot, path);
+                var startLine = GetLineNumber(content, matchIndex);
+                RequireApproval(
+                    "write_code",
+                    $"Edit {relativeFilePath} at line {startLine}",
+                    new Dictionary<string, string>
+                    {
+                        ["path"] = relativeFilePath,
+                        ["startLine"] = startLine.ToString(),
+                        ["oldContentPreview"] = CreateContentPreview(normalizedOldContent),
+                        ["newContentPreview"] = CreateContentPreview(normalizedNewContent)
+                    });
+
+                var updatedContent = string.Concat(
+                    content.AsSpan(0, matchIndex),
+                    normalizedNewContent,
+                    content.AsSpan(matchIndex + normalizedOldContent.Length));
+                WriteTextAtomically(path, updatedContent, encoding, originalBytes.AsSpan(0, preambleLength));
+                return $"已增量修改：{relativeFilePath}（第 {startLine} 行）";
+            });
+        }
+
         private static string ResolveDirectory(string relativeDirectory)
         {
             EnsureWorkspaceIsSet();
@@ -181,6 +239,95 @@ namespace Agent.Tools
         }
 
         private static bool IsAllowedFile(string path) => AllowedExtensions.Contains(Path.GetExtension(path));
+
+        private static (Encoding Encoding, int PreambleLength) DetectTextEncoding(ReadOnlySpan<byte> content)
+        {
+            if (content.StartsWith(new byte[] { 0x00, 0x00, 0xFE, 0xFF }))
+            {
+                return (new UTF32Encoding(bigEndian: true, byteOrderMark: true, throwOnInvalidCharacters: true), 4);
+            }
+
+            if (content.StartsWith(new byte[] { 0xFF, 0xFE, 0x00, 0x00 }))
+            {
+                return (new UTF32Encoding(bigEndian: false, byteOrderMark: true, throwOnInvalidCharacters: true), 4);
+            }
+
+            if (content.StartsWith(new byte[] { 0xEF, 0xBB, 0xBF }))
+            {
+                return (new UTF8Encoding(encoderShouldEmitUTF8Identifier: true, throwOnInvalidBytes: true), 3);
+            }
+
+            if (content.StartsWith(new byte[] { 0xFE, 0xFF }))
+            {
+                return (new UnicodeEncoding(bigEndian: true, byteOrderMark: true, throwOnInvalidBytes: true), 2);
+            }
+
+            if (content.StartsWith(new byte[] { 0xFF, 0xFE }))
+            {
+                return (new UnicodeEncoding(bigEndian: false, byteOrderMark: true, throwOnInvalidBytes: true), 2);
+            }
+
+            return (new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true), 0);
+        }
+
+        private static string DetectLineEnding(string content)
+        {
+            if (content.Contains("\r\n", StringComparison.Ordinal))
+            {
+                return "\r\n";
+            }
+
+            if (content.Contains('\n'))
+            {
+                return "\n";
+            }
+
+            return content.Contains('\r') ? "\r" : Environment.NewLine;
+        }
+
+        private static string NormalizeLineEndings(string content, string lineEnding) =>
+            content.Replace("\r\n", "\n", StringComparison.Ordinal)
+                .Replace('\r', '\n')
+                .Replace("\n", lineEnding, StringComparison.Ordinal);
+
+        private static int GetLineNumber(string content, int characterIndex)
+        {
+            var lineNumber = 1;
+            for (var index = 0; index < characterIndex; index++)
+            {
+                if (content[index] == '\n' || (content[index] == '\r' && (index + 1 >= characterIndex || content[index + 1] != '\n')))
+                {
+                    lineNumber++;
+                }
+            }
+
+            return lineNumber;
+        }
+
+        private static string CreateContentPreview(string content) =>
+            content.Length <= 500 ? content : $"{content[..500]}\n...";
+
+        private static void WriteTextAtomically(string path, string content, Encoding encoding, ReadOnlySpan<byte> preamble)
+        {
+            var encodedContent = encoding.GetBytes(content);
+            var output = new byte[preamble.Length + encodedContent.Length];
+            preamble.CopyTo(output);
+            encodedContent.CopyTo(output, preamble.Length);
+
+            var temporaryPath = $"{path}.{Guid.NewGuid():N}.tmp";
+            try
+            {
+                File.WriteAllBytes(temporaryPath, output);
+                File.Move(temporaryPath, path, overwrite: true);
+            }
+            finally
+            {
+                if (File.Exists(temporaryPath))
+                {
+                    File.Delete(temporaryPath);
+                }
+            }
+        }
 
         private static bool IsExcluded(string path)
         {
