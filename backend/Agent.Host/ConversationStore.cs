@@ -1,4 +1,3 @@
-using Agent.Tools;
 using Microsoft.Agents.AI;
 using System.Text.Json;
 
@@ -62,11 +61,9 @@ namespace Agent.Host
         public async Task<string?> RestoreWorkspaceAsync(string conversationId)
         {
             EnsureValidConversationId(conversationId);
-            AgentTools.ClearWorkSpaceRoot();
             var context = await LoadContextAsync(conversationId);
             if (context.WorkspaceRoot is { Length: > 0 } workspaceRoot && Directory.Exists(workspaceRoot))
             {
-                AgentTools.WorkSpaceTool(workspaceRoot);
                 return workspaceRoot;
             }
 

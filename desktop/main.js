@@ -7,10 +7,19 @@ const crypto = require("node:crypto");
 let mainWindow;
 let hostProcess;
 let titleBarTheme = "system";
+let isQuitting = false;
 const browserWindows = new Set();
 
 const applicationTitle = "乾Agent";
 const applicationIcon = path.join(__dirname, "resources", "qian-agent.png");
+
+function sendToMainWindow(channel, payload) {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) {
+    return;
+  }
+
+  mainWindow.webContents.send(channel, payload);
+}
 
 function getWindowBackgroundColor() {
   const useDarkTheme = titleBarTheme === "dark" || (titleBarTheme === "system" && nativeTheme.shouldUseDarkColors);
@@ -86,6 +95,9 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, "dist", "index.html"));
+  mainWindow.on("closed", () => {
+    mainWindow = undefined;
+  });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     openBrowserWindow(url);
     return { action: "deny" };
@@ -105,19 +117,27 @@ function startHost() {
 
   readline.createInterface({ input: hostProcess.stdout }).on("line", (line) => {
     try {
-      mainWindow?.webContents.send("agent:event", JSON.parse(line));
+      sendToMainWindow("agent:event", JSON.parse(line));
     } catch {
-      mainWindow?.webContents.send("agent:event", { type: "error", message: `Invalid host output: ${line}` });
+      sendToMainWindow("agent:event", { type: "error", message: `Invalid host output: ${line}` });
     }
   });
 
   readline.createInterface({ input: hostProcess.stderr }).on("line", (line) => {
-    mainWindow?.webContents.send("agent:event", { type: "host_log", payload: { text: line } });
+    sendToMainWindow("agent:event", { type: "host_log", payload: { text: line } });
   });
 
   hostProcess.on("exit", (code) => {
     hostProcess = undefined;
-    mainWindow?.webContents.send("agent:event", { type: "error", message: `Agent Host exited with code ${code ?? "unknown"}.` });
+    if (!isQuitting) {
+      sendToMainWindow("agent:event", { type: "error", message: `Agent Host exited with code ${code ?? "unknown"}.` });
+    }
+  });
+
+  hostProcess.on("error", (error) => {
+    if (!isQuitting) {
+      sendToMainWindow("agent:event", { type: "error", message: `Agent Host failed to start: ${error.message}` });
+    }
   });
 }
 
@@ -174,5 +194,6 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  isQuitting = true;
   hostProcess?.kill();
 });

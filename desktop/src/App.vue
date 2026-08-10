@@ -1,7 +1,7 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import MarkdownIt from "markdown-it";
-import { Check, ChevronRight, Copy, Eye, ListChecks, Minus, Monitor, Moon, Pencil, Plus, Send, Settings, Shield, ShieldCheck, Sparkles, SquarePen, Sun, X } from "@lucide/vue";
+import { Check, ChevronRight, Copy, Eye, FileText, ListChecks, Minus, Monitor, Moon, Pencil, PencilLine, Plus, Search, Send, Settings, Shield, ShieldCheck, Sparkles, SquarePen, Sun, Terminal, X } from "@lucide/vue";
 import appMarkUrl from "../resources/qian-agent-mark.svg";
 import appMarkWhiteUrl from "../resources/qian-agent-mark-white.svg";
 
@@ -21,10 +21,14 @@ const messages = ref([]);
 const streamingMessages = new Map();
 const isStreaming = ref(false);
 const pendingApproval = ref(null);
-const baseUrl = ref("https://api.thalux.cc/v1");
-const model = ref("gpt-5.6-terra");
+const baseUrl = ref("");
+const model = ref("");
 const apiKey = ref("");
 const apiKeyConfigured = ref(false);
+const availableModels = ref([]);
+const isLoadingModels = ref(false);
+const modelLoadError = ref("");
+const hasLoadedModels = ref(false);
 const modelMenuOpen = ref(false);
 const modelEditorOpen = ref(false);
 const renameTarget = ref(null);
@@ -170,7 +174,7 @@ function sendRequest(type, payload = {}) {
 
 function createConversationState() {
   return {
-    messages: [],
+    messages: reactive([]),
     hasLoadedMessages: false,
     workspaceRoot: "",
     isStreaming: false,
@@ -182,6 +186,10 @@ function createConversationState() {
     pinnedMessageId: null,
     scrollSpacerHeight: 0
   };
+}
+
+function replaceConversationMessages(state, source) {
+  state.messages = reactive([...(source || [])]);
 }
 
 function getConversationState(conversationId) {
@@ -219,7 +227,7 @@ function activateConversationState(conversationId) {
 
 function appendConversationMessage(conversationId, role, content = "", isPending = false) {
   const state = getConversationState(conversationId);
-  const message = { id: ++messageSequence, role, content, isPending };
+  const message = reactive({ id: ++messageSequence, role, content, isPending });
   if (state) {
     state.hasLoadedMessages = true;
     state.messages.push(message);
@@ -362,6 +370,97 @@ function appendMessage(role, content = "", isPending = false, forceScroll = role
 
 function renderMarkdown(content) {
   return markdown.render(content || "");
+}
+
+function progressLabel(item) {
+  if (item.kind !== "tool") {
+    return item.type === "plan" ? "正在规划" : "进展更新";
+  }
+
+  const labels = {
+    read_code: "读取文件",
+    list_files: "浏览文件",
+    search_code: "搜索代码",
+    grep_search: "搜索内容",
+    execute_powershell: "运行命令",
+    execute_command: "运行命令",
+    write_code: "写入文件",
+    edit_code: "修改文件",
+    search_internet: "搜索网络",
+    access_internet: "访问网络",
+    fetch_web_page: "读取网页",
+    execute_python: "运行脚本",
+    execute_temporary_python: "运行脚本",
+    get_current_path: "确认目录",
+    set_workspace: "设置工作区"
+  };
+  return labels[item.toolName] || "执行工具";
+}
+
+function mergeToolProgressItems(items) {
+  const details = [];
+  let activeDetail = null;
+  for (const item of items) {
+    if (item.state === "started") {
+      activeDetail = { ...item };
+      details.push(activeDetail);
+      continue;
+    }
+
+    if (activeDetail && (item.state === "completed" || item.state === "failed")) {
+      if (item.state === "failed") {
+        activeDetail.content = item.content;
+        activeDetail.state = "failed";
+      }
+      activeDetail = null;
+      continue;
+    }
+
+    details.push(item);
+  }
+
+  return details;
+}
+
+function groupProgressItems(message) {
+  const groups = [];
+  for (const item of message.progressItems || []) {
+    const previous = groups.at(-1);
+    if (item.kind === "tool" && previous?.kind === "tool" && previous.toolName === item.toolName) {
+      previous.items.push(item);
+      continue;
+    }
+
+    groups.push({
+      id: item.id,
+      kind: item.kind,
+      toolName: item.toolName,
+      type: item.type,
+      items: [item]
+    });
+  }
+
+  return groups.map((group) => {
+    const details = group.kind === "tool" ? mergeToolProgressItems(group.items) : group.items;
+    const toolRunCount = group.items.filter((item) => item.state === "started").length;
+    return {
+      ...group,
+      details,
+      title: group.kind === "tool" && toolRunCount > 1
+        ? `${progressLabel(group)} (${toolRunCount})`
+        : progressLabel(group),
+      expandable: group.kind === "tool"
+    };
+  });
+}
+
+function isProgressGroupExpanded(message, group) {
+  return Boolean(message.progressGroupExpanded?.[group.id]);
+}
+
+function toggleProgressGroup(message, group) {
+  message.progressGroupExpanded ||= {};
+  message.progressGroupExpanded[group.id] = !message.progressGroupExpanded[group.id];
 }
 
 function formatElapsed(message) {
@@ -536,6 +635,26 @@ async function saveModelConfiguration() {
   });
 }
 
+function invalidateModelList() {
+  availableModels.value = [];
+  modelLoadError.value = "";
+  hasLoadedModels.value = false;
+}
+
+async function loadModels() {
+  if (!baseUrl.value.trim() || (!apiKeyConfigured.value && !apiKey.value.trim())) {
+    modelLoadError.value = "请先填写 Base URL 和 API Key。";
+    return;
+  }
+
+  isLoadingModels.value = true;
+  modelLoadError.value = "";
+  await sendRequest("list_models", {
+    baseUrl: baseUrl.value.trim(),
+    apiKey: apiKey.value.trim() || undefined
+  });
+}
+
 function openModelEditor() {
   modelEditorOpen.value = true;
   modelMenuOpen.value = true;
@@ -544,6 +663,11 @@ function openModelEditor() {
 function closeModelMenu() {
   modelMenuOpen.value = false;
   modelEditorOpen.value = false;
+}
+
+function toggleModelMenu() {
+  modelMenuOpen.value = !modelMenuOpen.value;
+  modelEditorOpen.value = !apiKeyConfigured.value && modelMenuOpen.value;
 }
 
 function createConversation() {
@@ -754,12 +878,20 @@ function handleEvent(event) {
   }
 
   if (event.type === "model_config") {
-    baseUrl.value = payload.baseUrl || baseUrl.value;
-    model.value = payload.model || model.value;
+    baseUrl.value = payload.baseUrl || "";
+    model.value = payload.model || "";
     apiKeyConfigured.value = payload.hasApiKey;
     if (payload.hasApiKey) {
       connect();
     }
+    return;
+  }
+
+  if (event.type === "model_list") {
+    availableModels.value = payload.models || [];
+    modelLoadError.value = payload.error || "";
+    hasLoadedModels.value = availableModels.value.length > 0;
+    isLoadingModels.value = false;
     return;
   }
 
@@ -808,7 +940,7 @@ function handleEvent(event) {
   if (event.type === "conversation_opened") {
     const state = getConversationState(payload.conversationId);
     if (!state.hasLoadedMessages && !state.isStreaming) {
-      state.messages = payload.messages || [];
+      replaceConversationMessages(state, payload.messages);
       state.hasLoadedMessages = true;
     }
     state.workspaceRoot = payload.workspaceRoot || "";
@@ -864,7 +996,7 @@ function handleEvent(event) {
   if (event.type === "chat_started") {
     const state = getConversationState(payload.conversationId);
     if (!activeConversationId.value && state.messages.length === 0 && messages.value.length > 0) {
-      state.messages = messages.value;
+      replaceConversationMessages(state, messages.value);
     }
     state.hasLoadedMessages = true;
     state.workspaceRoot = payload.workspaceRoot || "";
@@ -943,7 +1075,7 @@ function handleEvent(event) {
       const removedTask = state.queuedTasks.find((item) => item.requestId === payload.queueItemId);
       state.queuedTasks = state.queuedTasks.filter((item) => item.requestId !== payload.queueItemId);
       if (removedTask?.clientMessageId) {
-        state.messages = state.messages.filter((message) => String(message.id) !== removedTask.clientMessageId);
+        replaceConversationMessages(state, state.messages.filter((message) => String(message.id) !== removedTask.clientMessageId));
         if (payload.conversationId === activeConversationId.value) {
           messages.value = state.messages;
         }
@@ -980,6 +1112,9 @@ function handleEvent(event) {
     message.progressItems ||= [];
     message.progressItems.push({
       id: ++messageSequence,
+      kind: payload.kind || "progress",
+      toolName: payload.toolName || "",
+      state: payload.state || "",
       type: payload.stage === "plan" ? "plan" : "observation",
       content: payload.text
     });
@@ -1183,9 +1318,26 @@ onBeforeUnmount(() => {
               </template>
               <div v-else-if="message.role === 'assistant'" class="assistant-response">
                 <div v-if="message.progressItems?.length && (message.isStreaming || message.detailsExpanded)" class="agent-segments">
-                  <section v-for="item in message.progressItems" :key="item.id" class="agent-segment" :class="item.type">
-                    <div class="agent-segment-heading"><ListChecks v-if="item.type === 'plan'" :size="15" /><Eye v-else :size="15" /><span>{{ item.type === "plan" ? "计划" : "观察" }}</span></div>
-                    <div class="markdown-content" v-html="renderMarkdown(item.content)"></div>
+                  <section v-for="group in groupProgressItems(message)" :key="group.id" class="agent-segment" :class="[group.type, group.kind, { expanded: isProgressGroupExpanded(message, group) }]">
+                    <button v-if="group.expandable" class="agent-segment-summary" type="button" :aria-expanded="isProgressGroupExpanded(message, group)" @click="toggleProgressGroup(message, group)">
+                      <FileText v-if="['read_code', 'list_files', 'write_code', 'edit_code'].includes(group.toolName)" :size="15" />
+                      <Search v-else-if="['search_code', 'grep_search', 'search_internet', 'access_internet', 'fetch_web_page'].includes(group.toolName)" :size="15" />
+                      <Terminal v-else-if="['execute_powershell', 'execute_command', 'execute_python', 'execute_temporary_python'].includes(group.toolName)" :size="15" />
+                      <PencilLine v-else :size="15" />
+                      <span>{{ group.title }}</span>
+                      <ChevronRight :size="15" :class="{ expanded: isProgressGroupExpanded(message, group) }" />
+                    </button>
+                    <template v-else>
+                      <div class="agent-segment-heading">
+                        <ListChecks v-if="group.type === 'plan'" :size="15" />
+                        <Eye v-else :size="15" />
+                        <span>{{ group.title }}</span>
+                      </div>
+                      <div class="markdown-content" v-html="renderMarkdown(group.details[0].content)"></div>
+                    </template>
+                    <div v-if="group.expandable && isProgressGroupExpanded(message, group)" class="agent-segment-details">
+                      <div v-for="detail in group.details" :key="detail.id" class="markdown-content" :class="{ failed: detail.state === 'failed' }" v-html="renderMarkdown(detail.content)"></div>
+                    </div>
                   </section>
                 </div>
                 <div v-if="getAssistantAnswer(message)" class="markdown-content agent-answer" v-html="renderMarkdown(getAssistantAnswer(message))"></div>
@@ -1241,7 +1393,7 @@ onBeforeUnmount(() => {
         </div>
         <div class="composer-footer">
           <div class="composer-actions">
-            <button class="model-trigger" type="button" :title="`当前模型：${model}`" @click="modelMenuOpen = !modelMenuOpen">{{ model || "配置模型" }}</button>
+            <button class="model-trigger" type="button" :title="apiKeyConfigured ? `当前模型：${model}` : '配置模型'" @click="toggleModelMenu">{{ apiKeyConfigured ? model : "配置模型" }}</button>
             <button v-if="isStreaming && !prompt.trim()" class="stop-send-button" type="button" title="停止当前任务" @click="cancelChat">■</button>
             <button v-else type="submit" :disabled="!initialized || !prompt.trim()" :title="isStreaming ? '加入任务队列' : '发送'">↑</button>
           </div>
@@ -1262,11 +1414,18 @@ onBeforeUnmount(() => {
           <p class="model-summary">{{ apiKeyConfigured ? "当前配置已保存到本机" : "尚未保存模型配置" }}</p>
           <button v-if="!modelEditorOpen" class="model-menu-command" type="button" @click="openModelEditor">配置新模型</button>
           <div v-if="modelEditorOpen" class="model-editor">
-            <label>Base URL<input v-model="baseUrl" /></label>
-            <label>模型<input v-model="model" list="model-options" /></label>
-            <datalist id="model-options"><option value="gpt-5.6-terra"></option><option value="gpt-5.6-sol"></option><option value="gpt-4.1"></option></datalist>
-            <label>API Key<input v-model="apiKey" type="password" :placeholder="apiKeyConfigured ? '留空则保持当前密钥' : '首次保存时必填'" /></label>
-            <button class="model-menu-command primary-model-command" type="button" @click="saveModelConfiguration">保存模型配置</button>
+            <label>Base URL<input v-model="baseUrl" @input="invalidateModelList" /></label>
+            <label>API Key<input v-model="apiKey" type="password" :placeholder="apiKeyConfigured ? '留空则使用已保存的密钥' : '首次保存时必填'" @input="invalidateModelList" /></label>
+            <button class="model-menu-command" type="button" :disabled="isLoadingModels || !baseUrl.trim() || (!apiKeyConfigured && !apiKey.trim())" @click="loadModels">{{ isLoadingModels ? "正在获取模型..." : "获取模型" }}</button>
+            <p v-if="modelLoadError" class="model-load-error">{{ modelLoadError }}</p>
+            <label>模型
+              <select v-model="model" :disabled="!hasLoadedModels">
+                <option value="" disabled>请选择已获取的模型</option>
+                <option v-if="model && !availableModels.includes(model)" :value="model">{{ model }}</option>
+                <option v-for="item in availableModels" :key="item" :value="item">{{ item }}</option>
+              </select>
+            </label>
+            <button class="model-menu-command primary-model-command" type="button" :disabled="!hasLoadedModels || !baseUrl.trim() || !model.trim() || (!apiKeyConfigured && !apiKey.trim())" @click="saveModelConfiguration">保存模型配置</button>
           </div>
         </section>
       </form>

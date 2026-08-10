@@ -16,6 +16,27 @@
 
 .agent-segment-heading{letter-spacing:0}
 
+/* Progress is intentionally compact: it reads like an activity feed and stays
+   available inside the response details disclosure after the answer finishes. */
+.agent-segments{gap:12px;padding:0 4px}
+.agent-segment.plan,.agent-segment.observation{padding:0 0 0 22px;border:0;border-radius:0;background:transparent}
+.agent-segment.plan::before,.agent-segment.observation::before{top:2px;bottom:2px;left:4px;width:1px;background:var(--border)}
+.agent-segment-heading{position:relative;min-height:19px;margin:0 0 2px;color:var(--muted);font-size:12px;font-weight:500}
+.agent-segment-heading svg{color:var(--muted);flex:none}
+.agent-segment .markdown-content{font-size:13px;line-height:1.55}
+.agent-segment.tool .agent-segment-heading{color:var(--text);font-weight:600}
+.agent-segment.tool .markdown-content{color:var(--muted)}
+.agent-segment.tool.observation::before{background:var(--border)}
+.agent-segment-summary{display:flex;width:100%;min-height:22px;align-items:center;gap:7px;padding:0;border:0;background:transparent;color:var(--muted);font:inherit;text-align:left}
+.agent-segment-summary:hover{color:var(--text)}
+.agent-segment-summary>span{max-width:calc(100% - 42px);overflow:hidden;font-size:12px;font-weight:600;text-overflow:ellipsis;white-space:nowrap}
+.agent-segment-summary>svg:first-child{flex:none;color:var(--muted)}
+.agent-segment-summary>svg:last-child{flex:none;transition:transform .16s ease}
+.agent-segment-summary>svg.expanded{transform:rotate(90deg)}
+.agent-segment-details{display:grid;gap:5px;margin:5px 0 0 22px;padding:7px 0 1px 10px;border-left:1px solid var(--border)}
+.agent-segment-details .markdown-content{font-size:12px;line-height:1.5}
+.agent-segment-details .markdown-content.failed{color:var(--danger)}
+
 .app-shell{grid-template-rows:32px minmax(0,1fr)}.window-titlebar{grid-column:1/-1;grid-row:1;display:flex;min-width:0;height:32px;background:var(--page);border-bottom:1px solid var(--border)}.window-drag-region{display:flex;align-items:center;flex:1;min-width:0;padding-left:12px;color:var(--muted);font-size:12px;font-weight:600;-webkit-app-region:drag}.window-controls{display:flex;height:32px;-webkit-app-region:no-drag}.window-controls button{display:grid;width:46px;height:32px;place-items:center;border:0;background:transparent;color:var(--muted)}.window-controls button:hover{background:var(--soft);color:var(--text)}.window-controls .window-close:hover{background:#b95050;color:#fff}.sidebar{grid-column:1;grid-row:2}.chat-panel{grid-column:2;grid-row:2}@media(max-width:620px){.window-drag-region{padding-left:9px}.window-controls button{width:40px}.sidebar{grid-column:1}.chat-panel{grid-column:2}}
 
 .window-controls{position:relative;z-index:2;pointer-events:auto}.window-controls button{-webkit-app-region:no-drag}
@@ -58,6 +79,7 @@
 
 .processing-spinner{border-top-color:var(--muted)}
 .message-scroll-spacer{min-height:0}
+.composer .primary-model-command:disabled{cursor:not-allowed;opacity:.42}
 
 /* Anchor the approval menu to the whole composer so it never overlaps its border. */
 .composer:has(.approval-mode-menu){z-index:9}.composer-footer .composer-approval-control{position:static}.composer .approval-mode-menu{left:14px;bottom:calc(100% + 8px);z-index:10}
@@ -76,3 +98,10 @@
 
 .conversation-status-panel,.queued-task-panel{margin:0 0 10px;padding:10px 11px;border:1px solid var(--border);border-radius:13px;background:var(--page)}.conversation-status-heading,.queued-task-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}.conversation-status-heading strong,.queued-task-heading span{font-size:12px;font-weight:650}.composer .conversation-status-heading button{display:block;width:auto;height:auto;padding:2px 4px;border:0;border-radius:6px;background:transparent;color:var(--muted);font-size:11px}.composer .conversation-status-heading button:hover{background:var(--soft);color:var(--text);filter:none}.conversation-status-panel dl{display:grid;gap:6px;margin:9px 0 0}.conversation-status-panel dl>div{display:grid;grid-template-columns:64px minmax(0,1fr);gap:10px;font-size:11px;line-height:1.45}.conversation-status-panel dt{color:var(--muted)}.conversation-status-panel dd{min-width:0;margin:0;overflow-wrap:anywhere;color:var(--text)}.queued-task-heading strong{display:grid;min-width:20px;height:20px;place-items:center;border-radius:7px;background:var(--soft);color:var(--muted);font-size:10px}.queued-task-panel ol{display:grid;gap:4px;margin:7px 0 0;padding:0;list-style:none}.queued-task-panel li{display:grid;min-width:0;grid-template-columns:20px minmax(0,1fr);align-items:center;gap:7px;padding:5px 6px;border-radius:8px;color:var(--muted);font-size:11px}.queued-task-panel li:hover{background:var(--soft);color:var(--text)}.queued-task-panel li>span{display:grid;width:18px;height:18px;place-items:center;border:1px solid var(--border);border-radius:6px;font-size:9px}.queued-task-panel p{overflow:hidden;margin:0;text-overflow:ellipsis;white-space:nowrap}.queued-task-more{padding:5px 6px 0 33px;color:var(--muted);font-size:10px}
 .queued-task-panel li{grid-template-columns:20px minmax(0,1fr) 24px}.composer .queued-task-remove{display:grid;width:24px;height:24px;place-items:center;padding:0;border:0;border-radius:7px;background:transparent;color:var(--muted);opacity:.7}.composer .queued-task-remove:hover{background:var(--border);color:var(--text);filter:none;opacity:1}.composer .queued-task-remove:disabled{opacity:.3}
+.model-editor select{width:100%;border:1px solid var(--border);border-radius:10px;padding:9px;outline:0;background:var(--surface);color:var(--text)}.model-editor select:disabled{cursor:not-allowed;opacity:.55}.model-editor select:focus{border-color:var(--text);box-shadow:0 0 0 3px var(--soft)}.model-load-error{margin:0;color:var(--danger);font-size:12px;line-height:1.4}
+
+/* The sidebar belongs to the application frame; the conversation is an inset work surface. */
+.app-shell{background:var(--page)}
+.sidebar{background:transparent;border-right:0}
+.chat-panel{margin:10px 12px 12px 0;overflow:hidden;border:1px solid var(--border);border-radius:18px;background:var(--surface)}
+@media(max-width:620px){.chat-panel{margin:8px 8px 8px 0;border-radius:14px}}

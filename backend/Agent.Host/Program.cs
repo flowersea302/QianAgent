@@ -146,6 +146,10 @@ namespace Agent.Host
                     await SaveModelConfigurationAsync(request.Id, request.Payload);
                     break;
 
+                case "list_models":
+                    await ListModelsAsync(request.Id, request.Payload);
+                    break;
+
                 case "new_conversation":
                     await CreateConversationAsync(request.Id);
                     break;
@@ -272,6 +276,67 @@ namespace Agent.Host
             }));
         }
 
+        private async Task ListModelsAsync(string? requestId, JsonElement payload)
+        {
+            var baseUrl = GetRequiredString(payload, "baseUrl");
+            var existingConfiguration = await _modelConfigurationStore.LoadAsync();
+            var apiKey = GetOptionalString(payload, "apiKey") ?? existingConfiguration?.ApiKey;
+            if (string.IsNullOrWhiteSpace(apiKey))
+            {
+                await SendAsync(new HostEvent(requestId, "model_list", new { models = Array.Empty<string>(), error = "请先填写 API Key。" }));
+                return;
+            }
+
+            try
+            {
+                using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+                using var request = new HttpRequestMessage(HttpMethod.Get, $"{NormalizeBaseUrl(baseUrl).TrimEnd('/')}/models");
+                request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {apiKey}");
+                using var response = await client.SendAsync(request);
+                if (!response.IsSuccessStatusCode)
+                {
+                    await SendAsync(new HostEvent(requestId, "model_list", new
+                    {
+                        models = Array.Empty<string>(),
+                        error = $"获取模型失败，服务返回 HTTP {(int)response.StatusCode}。"
+                    }));
+                    return;
+                }
+
+                await using var content = await response.Content.ReadAsStreamAsync();
+                using var document = await JsonDocument.ParseAsync(content);
+                var modelItems = document.RootElement.ValueKind == JsonValueKind.Object
+                    && document.RootElement.TryGetProperty("data", out var data)
+                    && data.ValueKind == JsonValueKind.Array
+                    ? data.EnumerateArray()
+                    : Enumerable.Empty<JsonElement>();
+                var models = modelItems
+                    .Where(item => item.ValueKind == JsonValueKind.Object
+                        && item.TryGetProperty("id", out var id)
+                        && id.ValueKind == JsonValueKind.String)
+                    .Select(item => item.GetProperty("id").GetString())
+                    .Where(id => !string.IsNullOrWhiteSpace(id))
+                    .Cast<string>()
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(id => id, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+
+                await SendAsync(new HostEvent(requestId, "model_list", new
+                {
+                    models,
+                    error = models.Length == 0 ? "接口未返回可用模型。" : null
+                }));
+            }
+            catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or UriFormatException or JsonException)
+            {
+                await SendAsync(new HostEvent(requestId, "model_list", new
+                {
+                    models = Array.Empty<string>(),
+                    error = "无法获取模型，请检查 Base URL、API Key 和网络连接。"
+                }));
+            }
+        }
+
         private Task SendApprovalPreferencesAsync(string? requestId) =>
             SendAsync(new HostEvent(requestId, "approval_preferences", new
             {
@@ -324,13 +389,7 @@ namespace Agent.Host
             var agent = GetAgent();
             if (_draftConversations.TryGetValue(conversationId, out var draft))
             {
-                var draftResult = AgentTools.WorkSpaceTool(workspaceRoot);
-                if (string.IsNullOrWhiteSpace(AgentTools.GetWorkSpaceRoot()))
-                {
-                    throw new InvalidOperationException(draftResult);
-                }
-
-                draft.WorkspaceRoot = AgentTools.GetWorkSpaceRoot();
+                draft.WorkspaceRoot = AgentTools.SetWorkSpaceRoot(workspaceRoot);
                 await SendAsync(new HostEvent(requestId, "workspace_changed", new { conversationId, workspaceRoot = draft.WorkspaceRoot }));
                 return;
             }
@@ -341,14 +400,9 @@ namespace Agent.Host
             }
 
             await _conversationStore.LoadSessionAsync(conversationId, agent);
-            var result = AgentTools.WorkSpaceTool(workspaceRoot);
-            if (string.IsNullOrWhiteSpace(AgentTools.GetWorkSpaceRoot()))
-            {
-                throw new InvalidOperationException(result);
-            }
-
-            await _conversationStore.SaveWorkspaceAsync(conversationId, AgentTools.GetWorkSpaceRoot());
-            await SendAsync(new HostEvent(requestId, "workspace_changed", new { conversationId, workspaceRoot = AgentTools.GetWorkSpaceRoot() }));
+            var normalizedWorkspaceRoot = AgentTools.SetWorkSpaceRoot(workspaceRoot);
+            await _conversationStore.SaveWorkspaceAsync(conversationId, normalizedWorkspaceRoot);
+            await SendAsync(new HostEvent(requestId, "workspace_changed", new { conversationId, workspaceRoot = normalizedWorkspaceRoot }));
         }
 
         private async Task RenameConversationAsync(string? requestId, string conversationId, string title)
@@ -453,6 +507,7 @@ namespace Agent.Host
 
         private async Task RunChatAsync(HostRequest request, ChatRun chatRun)
         {
+            using var workSpaceScope = AgentTools.BeginWorkSpaceScope();
             _currentChat.Value = chatRun;
             using var progressCancellation = CancellationTokenSource.CreateLinkedTokenSource(chatRun.Cancellation.Token);
             var progressTask = SendProgressHeartbeatAsync(chatRun, progressCancellation.Token);
@@ -490,14 +545,20 @@ namespace Agent.Host
             var agent = GetAgent();
             _draftConversations.TryGetValue(conversationId, out var draft);
             var sessionLoadResult = await _conversationStore.LoadSessionAsync(conversationId, agent);
+            AgentTools.ClearWorkSpaceRoot();
             var workspaceRoot = draft is null
                 ? await _conversationStore.RestoreWorkspaceAsync(conversationId)
                 : RestoreDraftWorkspace(draft);
+            if (!string.IsNullOrWhiteSpace(workspaceRoot))
+            {
+                AgentTools.SetWorkSpaceRoot(workspaceRoot);
+            }
+
             var previousMessages = await _conversationStore.LoadTranscriptAsync(conversationId);
             var compression = await _conversationStore.LoadCompressionAsync(conversationId);
 
               await SendAsync(new HostEvent(requestId, "chat_started", new { conversationId, workspaceRoot }));
-              await SendAsync(new HostEvent(requestId, "agent_progress", new { conversationId, stage = "plan", text = "正在分析你的请求并确定执行步骤。" }));
+              await SendAsync(new HostEvent(requestId, "agent_progress", new { conversationId, stage = "plan", kind = "progress", text = "正在分析你的请求并确定执行步骤。" }));
             if (message.Trim().Equals("/compress", StringComparison.OrdinalIgnoreCase))
             {
                 var result = await CompressConversationAsync(requestId, conversationId, previousMessages, compression, true, cancellationToken);
@@ -743,10 +804,8 @@ namespace Agent.Host
 
         private static string? RestoreDraftWorkspace(DraftConversation draft)
         {
-            AgentTools.ClearWorkSpaceRoot();
             if (!string.IsNullOrWhiteSpace(draft.WorkspaceRoot) && Directory.Exists(draft.WorkspaceRoot))
             {
-                AgentTools.WorkSpaceTool(draft.WorkspaceRoot);
                 return draft.WorkspaceRoot;
             }
 
@@ -790,7 +849,7 @@ namespace Agent.Host
             }
 
             var summaryAgent = _summaryAgent ?? throw new InvalidOperationException("Host is not initialized.");
-            await SendAsync(new HostEvent(requestId, "agent_progress", new { conversationId, stage = "plan", text = "正在整理较早的对话内容，以减少后续上下文占用。" }));
+            await SendAsync(new HostEvent(requestId, "agent_progress", new { conversationId, stage = "plan", kind = "progress", text = "正在整理较早的对话内容，以减少后续上下文占用。" }));
 
             var prompt = BuildCompressionPrompt(compression.Summary, candidates);
             var summarySession = await summaryAgent.CreateSessionAsync(cancellationToken);
@@ -937,6 +996,9 @@ namespace Agent.Host
             {
                 conversationId = chatRun.ConversationId,
                 stage,
+                kind = update.ToolName.Equals("report_progress", StringComparison.OrdinalIgnoreCase) ? "progress" : "tool",
+                toolName = update.ToolName,
+                state = update.Stage,
                 text = update.Summary
             })).GetAwaiter().GetResult();
         }
@@ -956,6 +1018,7 @@ namespace Agent.Host
                 {
                     conversationId = chatRun.ConversationId,
                     stage = "observation",
+                    kind = "progress",
                     text = "当前步骤仍在处理中，正在等待模型或工具返回。"
                 }));
             }
