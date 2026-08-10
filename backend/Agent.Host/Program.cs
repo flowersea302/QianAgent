@@ -27,8 +27,15 @@ namespace Agent.Host
         private static readonly HashSet<string> AutoApprovableTools = new(StringComparer.OrdinalIgnoreCase)
         {
             "write_code",
-            "execute_python"
+            "execute_python",
+            "execute_command",
+            "access_internet"
         };
+        private static readonly SlashCommandDefinition[] SlashCommands =
+        [
+            new("/compress", "压缩上下文", "整理较早的对话内容，减少后续 Token 占用"),
+            new("/status", "对话状态", "查看对话 ID、上下文占用和任务队列")
+        ];
         private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web)
         {
             PropertyNameCaseInsensitive = true
@@ -36,17 +43,25 @@ namespace Agent.Host
         private readonly ConversationStore _conversationStore = new();
         private readonly ModelConfigurationStore _modelConfigurationStore = new();
         private readonly ApprovalPreferenceStore _approvalPreferenceStore = new();
+        private readonly LocalSkillCatalog _localSkillCatalog = new();
         private readonly ConcurrentDictionary<string, PendingToolApproval> _pendingApprovals = new();
         private readonly ConcurrentDictionary<string, DraftConversation> _draftConversations = new(StringComparer.Ordinal);
         private readonly SemaphoreSlim _sendLock = new(1, 1);
         private readonly ConcurrentDictionary<string, ChatRun> _activeChats = new(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<string, ConversationChatQueue> _chatQueues = new(StringComparer.Ordinal);
         private readonly AsyncLocal<ChatRun?> _currentChat = new();
         private AIAgent? _agent;
         private AIAgent? _titleAgent;
+        private AIAgent? _summaryAgent;
+        private string? _currentModel;
+
+        private const int CompressionTokenThreshold = 6000;
+        private const int PreservedRecentMessages = 12;
 
         public AgentHost()
         {
             AgentTools.SetApprovalHandler(RequestToolApproval);
+            AgentTools.SetToolProgressHandler(ReportToolProgress);
         }
 
         public async Task RunAsync()
@@ -143,6 +158,28 @@ namespace Agent.Host
                     await SendAsync(new HostEvent(request.Id, "conversation_list", await ListConversationsAsync()));
                     break;
 
+                case "list_commands":
+                    await SendAsync(new HostEvent(request.Id, "command_list", new { commands = SlashCommands }));
+                    break;
+
+                case "list_skills":
+                    await SendAsync(new HostEvent(request.Id, "skill_list", new
+                    {
+                        skills = _localSkillCatalog.ListSkills().Select(skill => new { skill.Name, skill.Description })
+                    }));
+                    break;
+
+                case "get_conversation_status":
+                    await SendConversationStatusAsync(request.Id, GetRequiredString(request.Payload, "conversationId"));
+                    break;
+
+                case "remove_queued_chat":
+                    await RemoveQueuedChatAsync(
+                        request.Id,
+                        GetRequiredString(request.Payload, "conversationId"),
+                        GetRequiredString(request.Payload, "queueItemId"));
+                    break;
+
                 case "set_workspace":
                     await SetWorkspaceAsync(request.Id, GetRequiredString(request.Payload, "conversationId"), GetRequiredString(request.Payload, "workspaceRoot"));
                     break;
@@ -177,20 +214,28 @@ namespace Agent.Host
 
             ChatClient chatClient = client.GetChatClient(configuration.Model);
             _agent = chatClient.AsAIAgent(
-                instructions: "You are a helpful general-purpose assistant. For code tasks, inspect files before modifying them. When a one-off Python script is needed, use ExecuteTemporaryPythonScript so the script is removed after execution; use ExecutePythonScript only for an existing workspace script the user intends to keep. ReAct observable mode is enabled: before each tool call, emit a brief line prefixed with [Plan]; after each tool result, emit a brief line prefixed with [Observation]; finish with a concise direct response without an [Answer] prefix. Do not reveal private chain-of-thought or lengthy internal reasoning.",
-                tools:
-                [
+                instructions: "You are a helpful general-purpose assistant. For code tasks, inspect files before modifying them. Use SearchInternet when the user requests online research or when factual information may have changed. Search results contain source domains and dates: prefer official or primary sources, use the timeRange parameter for time-sensitive questions, and use preferredDomains when the user identifies trusted sources. Respect the configured network region and do not repeatedly retry a timed-out provider. After finding a relevant result, use FetchWebPage to read the source page before drawing detailed conclusions; if a page times out, returns an access error, or has no readable text, do not retry the same URL and instead use the search summary or another source. Cite the source URL in the final answer. Prefer dedicated tools for the task. For simple local operating-system information and operations, such as the current date or time, environment details, process inspection, and straightforward file operations, use ExecutePowerShell instead of writing a Python script. Use Python only when the task genuinely benefits from Python data processing, document generation, complex automation, an existing Python project, or when the user explicitly requests Python. When a one-off Python script is needed, use ExecuteTemporaryPythonScript so the script is removed after execution; use ExecutePythonScript only for an existing workspace script the user intends to keep. Use ReportProgress during multi-step work: report a concise plan before the first substantive action, report an observation after an important finding, and report a new plan whenever changing strategy or search terms. These updates must be short user-facing summaries, not private chain-of-thought. Do not repeat progress updates in the final answer. Execution progress is also reported separately by the host. Do not emit [Plan], [Observation], ordinary partial conclusions, or conversational filler as normal answer text before all required tool calls are complete. Finish with a concise direct response without an [Answer] prefix. Do not reveal private chain-of-thought or lengthy internal reasoning.",
+                  tools:
+                  [
+                    AIFunctionFactory.Create(AgentTools.ReportProgress),
                     AIFunctionFactory.Create(AgentTools.WorkSpaceTool),
                     AIFunctionFactory.Create(AgentTools.ListFiles),
                     AIFunctionFactory.Create(AgentTools.SearchCode),
+                    AIFunctionFactory.Create(AgentTools.GrepSearch),
+                    AIFunctionFactory.Create(AgentTools.SearchInternet),
+                    AIFunctionFactory.Create(AgentTools.FetchWebPage),
                     AIFunctionFactory.Create(AgentTools.ReadCode),
                     AIFunctionFactory.Create(AgentTools.WriteCode),
                     AIFunctionFactory.Create(AgentTools.GetCurrentPath),
+                    AIFunctionFactory.Create(AgentTools.ExecutePowerShell),
                     AIFunctionFactory.Create(AgentTools.ExecutePythonScript),
                     AIFunctionFactory.Create(AgentTools.ExecuteTemporaryPythonScript)
                 ]);
             _titleAgent = chatClient.AsAIAgent(
                 instructions: "Generate a concise Chinese conversation title of at most 20 characters. Return only the title. Do not use tools, labels, quotation marks, or punctuation.");
+            _summaryAgent = chatClient.AsAIAgent(
+                instructions: "Summarize conversation history for future context. Preserve user goals, requirements, decisions, constraints, unresolved questions, workspace details, and important tool results. Be concise and factual. Do not include commentary about the summarization process.");
+            _currentModel = configuration.Model;
             return configuration;
         }
 
@@ -217,6 +262,7 @@ namespace Agent.Host
             await _modelConfigurationStore.SaveAsync(configuration);
             _agent = null;
             _titleAgent = null;
+            _summaryAgent = null;
             await SendAsync(new HostEvent(requestId, "model_config_saved", new
             {
                 baseUrl = configuration.BaseUrl,
@@ -345,20 +391,70 @@ namespace Agent.Host
         private async Task StartChatAsync(HostRequest request)
         {
             var conversationId = GetOptionalString(request.Payload, "conversationId") ?? _conversationStore.CreateConversationId();
-            var chatRun = new ChatRun(conversationId, request.Id, new CancellationTokenSource());
-            if (!_activeChats.TryAdd(conversationId, chatRun))
+            var queue = _chatQueues.GetOrAdd(conversationId, static _ => new ConversationChatQueue());
+            var shouldStartProcessor = false;
+            var queuedPosition = 0;
+            lock (queue.SyncRoot)
             {
-                chatRun.Cancellation.Dispose();
-                await SendAsync(new HostEvent(request.Id, "error", new { conversationId }, "This conversation is already processing a request."));
-                return;
+                queue.Requests.Enqueue(request);
+                if (queue.IsProcessing)
+                {
+                    queuedPosition = queue.Requests.Count;
+                }
+                else
+                {
+                    queue.IsProcessing = true;
+                    shouldStartProcessor = true;
+                }
             }
 
-            chatRun.Task = Task.Run(() => RunChatAsync(request, chatRun));
+            if (queuedPosition > 0)
+            {
+                await SendAsync(new HostEvent(request.Id, "chat_queued", new
+                {
+                    conversationId,
+                    message = GetRequiredString(request.Payload, "message"),
+                    clientMessageId = GetOptionalString(request.Payload, "clientMessageId"),
+                    position = queuedPosition
+                }));
+            }
+
+            if (shouldStartProcessor)
+            {
+                _ = Task.Run(() => ProcessChatQueueAsync(conversationId, queue));
+            }
+        }
+
+        private async Task ProcessChatQueueAsync(string conversationId, ConversationChatQueue queue)
+        {
+            while (true)
+            {
+                HostRequest? request;
+                int remainingCount;
+                lock (queue.SyncRoot)
+                {
+                    if (!queue.Requests.TryDequeue(out request))
+                    {
+                        queue.IsProcessing = false;
+                        return;
+                    }
+
+                    remainingCount = queue.Requests.Count;
+                }
+
+                var chatRun = new ChatRun(conversationId, request.Id, new CancellationTokenSource());
+                _activeChats[conversationId] = chatRun;
+                await SendAsync(new HostEvent(request.Id, "chat_dequeued", new { conversationId, remainingCount }));
+                chatRun.Task = RunChatAsync(request, chatRun);
+                await chatRun.Task;
+            }
         }
 
         private async Task RunChatAsync(HostRequest request, ChatRun chatRun)
         {
             _currentChat.Value = chatRun;
+            using var progressCancellation = CancellationTokenSource.CreateLinkedTokenSource(chatRun.Cancellation.Token);
+            var progressTask = SendProgressHeartbeatAsync(chatRun, progressCancellation.Token);
             try
             {
                 await ChatAsync(chatRun.RequestId, chatRun.ConversationId, GetRequiredString(request.Payload, "message"), chatRun.Cancellation.Token);
@@ -373,6 +469,14 @@ namespace Agent.Host
             }
             finally
             {
+                progressCancellation.Cancel();
+                try
+                {
+                    await progressTask;
+                }
+                catch (OperationCanceledException)
+                {
+                }
                 ResolvePendingApprovals(chatRun.ConversationId, false);
                 _activeChats.TryRemove(chatRun.ConversationId, out _);
                 _currentChat.Value = null;
@@ -385,12 +489,32 @@ namespace Agent.Host
             var agent = GetAgent();
             _draftConversations.TryGetValue(conversationId, out var draft);
             var sessionLoadResult = await _conversationStore.LoadSessionAsync(conversationId, agent);
-            var session = sessionLoadResult.Session;
             var workspaceRoot = draft is null
                 ? await _conversationStore.RestoreWorkspaceAsync(conversationId)
                 : RestoreDraftWorkspace(draft);
-            var previousMessages = sessionLoadResult.WasRestored ? [] : await _conversationStore.LoadTranscriptAsync(conversationId);
+            var previousMessages = await _conversationStore.LoadTranscriptAsync(conversationId);
+            var compression = await _conversationStore.LoadCompressionAsync(conversationId);
+
+              await SendAsync(new HostEvent(requestId, "chat_started", new { conversationId, workspaceRoot }));
+              await SendAsync(new HostEvent(requestId, "agent_progress", new { conversationId, stage = "plan", text = "正在分析你的请求并确定执行步骤。" }));
+            if (message.Trim().Equals("/compress", StringComparison.OrdinalIgnoreCase))
+            {
+                var result = await CompressConversationAsync(requestId, conversationId, previousMessages, compression, true, cancellationToken);
+                    var status = result.CompressedMessageCount > compression.CompressedMessageCount
+                        ? "上下文已整理完成，后续对话将使用摘要与近期消息。"
+                        : "当前历史较短，无需整理上下文。";
+                await _conversationStore.AppendTranscriptMessageAsync(conversationId, new ConversationMessage("user", message));
+                await _conversationStore.AppendTranscriptMessageAsync(conversationId, new ConversationMessage("assistant", status));
+                await SendAsync(new HostEvent(requestId, "text_delta", new { conversationId, text = status }));
+                await SendAsync(new HostEvent(requestId, "completed", new { conversationId, workspaceRoot = AgentTools.GetWorkSpaceRoot(), response = status }));
+                return;
+            }
+
+            compression = await CompressConversationAsync(requestId, conversationId, previousMessages, compression, false, cancellationToken);
+            var useCompressedContext = !string.IsNullOrWhiteSpace(compression.Summary);
+            var session = useCompressedContext ? await agent.CreateSessionAsync() : sessionLoadResult.Session;
             await _conversationStore.AppendTranscriptMessageAsync(conversationId, new ConversationMessage("user", message));
+            var expandedMessage = _localSkillCatalog.ExpandPrompt(message);
             if (draft is not null)
             {
                 await _conversationStore.SaveSessionAsync(conversationId, agent, session);
@@ -403,14 +527,25 @@ namespace Agent.Host
                 _draftConversations.TryRemove(conversationId, out _);
             }
 
-            await SendAsync(new HostEvent(requestId, "chat_started", new { conversationId, workspaceRoot }));
-
             var response = new StringBuilder();
+            long? reportedContextTokens = null;
             try
             {
-                var input = sessionLoadResult.WasRestored ? message : BuildContinuationInput(previousMessages, message);
+                var input = useCompressedContext
+                    ? BuildCompressedInput(compression, previousMessages, expandedMessage)
+                    : sessionLoadResult.WasRestored ? expandedMessage : BuildContinuationInput(previousMessages, expandedMessage);
                 await foreach (AgentResponseUpdate update in agent.RunStreamingAsync(input, session).WithCancellation(cancellationToken))
                 {
+                    foreach (var usage in update.Contents.OfType<UsageContent>())
+                    {
+                        var tokenCount = usage.Details.TotalTokenCount
+                            ?? usage.Details.InputTokenCount + usage.Details.OutputTokenCount;
+                        if (tokenCount is > 0)
+                        {
+                            reportedContextTokens = Math.Max(reportedContextTokens ?? 0, tokenCount.Value);
+                        }
+                    }
+
                     if (string.IsNullOrEmpty(update.Text))
                     {
                         continue;
@@ -435,6 +570,14 @@ namespace Agent.Host
             await _conversationStore.SaveSessionAsync(conversationId, agent, session);
             await _conversationStore.SaveWorkspaceAsync(conversationId, AgentTools.GetWorkSpaceRoot());
             await _conversationStore.AppendTranscriptMessageAsync(conversationId, new ConversationMessage("assistant", response.ToString()));
+            if (reportedContextTokens is > 0 && !string.IsNullOrWhiteSpace(_currentModel))
+            {
+                await _conversationStore.SaveTokenUsageAsync(
+                    conversationId,
+                    reportedContextTokens.Value,
+                    previousMessages.Count + 2,
+                    _currentModel);
+            }
             await SendAsync(new HostEvent(requestId, "completed", new { conversationId, workspaceRoot = AgentTools.GetWorkSpaceRoot(), response = response.ToString() }));
             _ = GenerateConversationTitleAsync(conversationId);
         }
@@ -498,6 +641,94 @@ namespace Agent.Host
 
         private Task<IReadOnlyList<object>> ListConversationsAsync() => _conversationStore.ListAsync();
 
+        private async Task SendConversationStatusAsync(string? requestId, string conversationId)
+        {
+            if (!_draftConversations.ContainsKey(conversationId) && !_conversationStore.ConversationExists(conversationId))
+            {
+                throw new InvalidOperationException("Conversation does not exist.");
+            }
+
+            var messages = await _conversationStore.LoadTranscriptAsync(conversationId);
+            var compression = await _conversationStore.LoadCompressionAsync(conversationId);
+            var activeMessages = messages.Skip(Math.Clamp(compression.CompressedMessageCount, 0, messages.Count));
+            var estimatedTokens = (long)EstimateTextTokens(compression.Summary) + activeMessages.Sum(message => (long)EstimateTextTokens(message.Content));
+            var storedUsage = await _conversationStore.LoadTokenUsageAsync(conversationId);
+            var canUseReportedUsage = storedUsage.ContextTokenCount is > 0
+                && string.Equals(storedUsage.Model, _currentModel, StringComparison.OrdinalIgnoreCase)
+                && storedUsage.MessageCount <= messages.Count;
+            var contextTokenCount = canUseReportedUsage
+                ? storedUsage.ContextTokenCount.GetValueOrDefault() + messages.Skip(storedUsage.MessageCount).Sum(message => (long)EstimateTextTokens(message.Content))
+                : estimatedTokens;
+            var tokenCountSource = canUseReportedUsage && storedUsage.MessageCount == messages.Count
+                ? "model"
+                : canUseReportedUsage ? "model_plus_estimate" : "estimate";
+            var queuedCount = 0;
+            if (_chatQueues.TryGetValue(conversationId, out var queue))
+            {
+                lock (queue.SyncRoot)
+                {
+                    queuedCount = queue.Requests.Count;
+                }
+            }
+
+            await SendAsync(new HostEvent(requestId, "conversation_status", new
+            {
+                conversationId,
+                contextTokenCount,
+                tokenCountSource,
+                contextWindowTokens = (int?)null,
+                messageCount = messages.Count,
+                compressedMessageCount = compression.CompressedMessageCount,
+                isProcessing = _activeChats.ContainsKey(conversationId),
+                queuedCount
+            }));
+        }
+
+        private async Task RemoveQueuedChatAsync(string? requestId, string conversationId, string queueItemId)
+        {
+            var removed = false;
+            var remainingCount = 0;
+            if (_chatQueues.TryGetValue(conversationId, out var queue))
+            {
+                lock (queue.SyncRoot)
+                {
+                    var requests = queue.Requests.ToArray();
+                    queue.Requests.Clear();
+                    foreach (var queuedRequest in requests)
+                    {
+                        if (!removed && string.Equals(queuedRequest.Id, queueItemId, StringComparison.Ordinal))
+                        {
+                            removed = true;
+                            continue;
+                        }
+
+                        queue.Requests.Enqueue(queuedRequest);
+                    }
+
+                    remainingCount = queue.Requests.Count;
+                }
+            }
+
+            await SendAsync(new HostEvent(requestId, "chat_queue_item_removed", new
+            {
+                conversationId,
+                queueItemId,
+                removed,
+                remainingCount
+            }));
+        }
+
+        private static int EstimateTextTokens(string? text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return 0;
+            }
+
+            var asciiCharacters = text.Count(char.IsAscii);
+            return Math.Max(1, (int)Math.Ceiling(asciiCharacters / 4d) + text.Length - asciiCharacters);
+        }
+
         private static string ValidateConversationTitle(string title)
         {
             title = title.Trim();
@@ -539,6 +770,89 @@ namespace Agent.Host
             transcript.Append($"user: {message}");
             return transcript.ToString();
         }
+
+        private async Task<ConversationCompression> CompressConversationAsync(
+            string? requestId,
+            string conversationId,
+            IReadOnlyList<ConversationMessage> messages,
+            ConversationCompression compression,
+            bool force,
+            CancellationToken cancellationToken)
+        {
+            var startIndex = Math.Clamp(compression.CompressedMessageCount, 0, messages.Count);
+            var messagesToKeep = force ? 4 : PreservedRecentMessages;
+            var endIndex = Math.Max(startIndex, messages.Count - messagesToKeep);
+            var candidates = messages.Skip(startIndex).Take(endIndex - startIndex).ToList();
+            if (candidates.Count == 0 || (!force && EstimateTokens(candidates) < CompressionTokenThreshold))
+            {
+                return compression;
+            }
+
+            var summaryAgent = _summaryAgent ?? throw new InvalidOperationException("Host is not initialized.");
+            await SendAsync(new HostEvent(requestId, "agent_progress", new { conversationId, stage = "plan", text = "正在整理较早的对话内容，以减少后续上下文占用。" }));
+
+            var prompt = BuildCompressionPrompt(compression.Summary, candidates);
+            var summarySession = await summaryAgent.CreateSessionAsync(cancellationToken);
+            var summary = new StringBuilder();
+            await foreach (var update in summaryAgent.RunStreamingAsync(prompt, summarySession).WithCancellation(cancellationToken))
+            {
+                summary.Append(update.Text);
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            var normalizedSummary = summary.ToString().Trim();
+            if (string.IsNullOrWhiteSpace(normalizedSummary))
+            {
+                return compression;
+            }
+
+            var updatedCompression = new ConversationCompression(normalizedSummary, endIndex);
+            await _conversationStore.SaveCompressionAsync(conversationId, normalizedSummary, updatedCompression.CompressedMessageCount);
+            await SendAsync(new HostEvent(requestId, "agent_progress", new { conversationId, stage = "observation", text = $"已整理 {candidates.Count} 条历史消息，保留最近 {messages.Count - endIndex} 条原文。" }));
+            return updatedCompression;
+        }
+
+        private static string BuildCompressedInput(ConversationCompression compression, IReadOnlyList<ConversationMessage> messages, string message)
+        {
+            var input = new StringBuilder("Use the conversation summary and recent messages below as context. Follow the user's final message.\n\n");
+            input.AppendLine("Conversation summary:");
+            input.AppendLine(compression.Summary);
+            input.AppendLine();
+            input.AppendLine("Recent messages:");
+            foreach (var previousMessage in messages.Skip(compression.CompressedMessageCount).TakeLast(PreservedRecentMessages))
+            {
+                input.AppendLine($"{previousMessage.Role}: {TruncateForContext(previousMessage.Content)}");
+            }
+
+            input.AppendLine();
+            input.Append($"user: {message}");
+            return input.ToString();
+        }
+
+        private static string BuildCompressionPrompt(string? existingSummary, IReadOnlyList<ConversationMessage> messages)
+        {
+            var prompt = new StringBuilder("Create a compact, durable conversation summary. Preserve user goals, requirements, decisions, constraints, workspace details, important tool results, and unresolved work. Do not mention that you are summarizing.\n\n");
+            if (!string.IsNullOrWhiteSpace(existingSummary))
+            {
+                prompt.AppendLine("Existing summary:");
+                prompt.AppendLine(existingSummary);
+                prompt.AppendLine();
+            }
+
+            prompt.AppendLine("Messages to merge:");
+            foreach (var message in messages)
+            {
+                prompt.AppendLine($"{message.Role}: {TruncateForContext(message.Content)}");
+            }
+
+            return prompt.ToString();
+        }
+
+        private static int EstimateTokens(IEnumerable<ConversationMessage> messages) =>
+            messages.Sum(message => Math.Max(1, message.Content.Length / 4));
+
+        private static string TruncateForContext(string content) =>
+            content.Length <= 4000 ? content : $"{content[..4000]}\n[truncated]";
 
         private async Task CancelChatAsync(string? requestId, string? conversationId)
         {
@@ -585,12 +899,6 @@ namespace Agent.Host
             var chatRun = _currentChat.Value ?? throw new InvalidOperationException("Tool approval was requested outside an active conversation.");
             _pendingApprovals[approvalId] = new PendingToolApproval(completion, request.ToolName, chatRun.ConversationId);
 
-            SendAsync(new HostEvent(chatRun.RequestId, "text_delta", new
-            {
-                conversationId = chatRun.ConversationId,
-                text = CreateApprovalPlan(request)
-            })).GetAwaiter().GetResult();
-
             SendAsync(new HostEvent(chatRun.RequestId, "tool_approval_requested", new
             {
                 approvalId,
@@ -614,20 +922,43 @@ namespace Agent.Host
             }
         }
 
-        private static string CreateApprovalPlan(ToolApprovalRequest request)
+        private void ReportToolProgress(ToolProgressUpdate update)
         {
-            return request.ToolName switch
+            var chatRun = _currentChat.Value;
+            if (chatRun is null)
             {
-                "write_code" => $"[Plan] 准备写入工作区文件：{GetApprovalDetail(request, "path", request.Summary)}。该操作可能覆盖现有内容，需要你的确认。\n",
-                "execute_python" => $"[Plan] 准备执行 Python 脚本：{GetApprovalDetail(request, "scriptPath", request.Summary)}；参数：{GetApprovalDetail(request, "arguments", "无")}；超时：{GetApprovalDetail(request, "timeoutMilliseconds", "默认")} ms。需要你的确认。\n",
-                _ => $"[Plan] 准备执行需要确认的操作：{request.Summary}。需要你的确认。\n"
-            };
+                return;
+            }
+
+            chatRun.LastProgressAt = DateTimeOffset.UtcNow;
+            var stage = update.Stage.Equals("started", StringComparison.OrdinalIgnoreCase) ? "plan" : "observation";
+            SendAsync(new HostEvent(chatRun.RequestId, "agent_progress", new
+            {
+                conversationId = chatRun.ConversationId,
+                stage,
+                text = update.Summary
+            })).GetAwaiter().GetResult();
         }
 
-        private static string GetApprovalDetail(ToolApprovalRequest request, string name, string fallback) =>
-            request.Details.TryGetValue(name, out var value) && !string.IsNullOrWhiteSpace(value)
-                ? value
-                : fallback;
+        private async Task SendProgressHeartbeatAsync(ChatRun chatRun, CancellationToken cancellationToken)
+        {
+            while (true)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken);
+                if (DateTimeOffset.UtcNow - chatRun.LastProgressAt < TimeSpan.FromSeconds(28))
+                {
+                    continue;
+                }
+
+                chatRun.LastProgressAt = DateTimeOffset.UtcNow;
+                await SendAsync(new HostEvent(chatRun.RequestId, "agent_progress", new
+                {
+                    conversationId = chatRun.ConversationId,
+                    stage = "observation",
+                    text = "当前步骤仍在处理中，正在等待模型或工具返回。"
+                }));
+            }
+        }
 
         private void ResolvePendingApprovals(string conversationId, bool approved)
         {
@@ -703,6 +1034,17 @@ namespace Agent.Host
             public CancellationTokenSource Cancellation { get; }
 
             public Task? Task { get; set; }
+
+            public DateTimeOffset LastProgressAt { get; set; } = DateTimeOffset.UtcNow;
+        }
+
+        private sealed class ConversationChatQueue
+        {
+            public object SyncRoot { get; } = new();
+
+            public Queue<HostRequest> Requests { get; } = new();
+
+            public bool IsProcessing { get; set; }
         }
 
         private sealed record PendingToolApproval(TaskCompletionSource<bool> Completion, string ToolName, string ConversationId);
@@ -711,4 +1053,6 @@ namespace Agent.Host
     internal sealed record HostRequest(string? Id, string Type, JsonElement Payload);
 
     internal sealed record HostEvent(string? Id, string Type, object? Payload, string? Message = null);
+
+    internal sealed record SlashCommandDefinition(string Command, string Title, string Description);
 }

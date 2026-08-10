@@ -7,14 +7,66 @@ const crypto = require("node:crypto");
 let mainWindow;
 let hostProcess;
 let titleBarTheme = "system";
+const browserWindows = new Set();
+
+const applicationTitle = "乾Agent";
+const applicationIcon = path.join(__dirname, "resources", "qian-agent.png");
+
+function getWindowBackgroundColor() {
+  const useDarkTheme = titleBarTheme === "dark" || (titleBarTheme === "system" && nativeTheme.shouldUseDarkColors);
+  return useDarkTheme ? "#191a1d" : "#f7f7f8";
+}
 
 function updateWindowTheme() {
   if (!mainWindow) {
     return;
   }
 
-  const useDarkTheme = titleBarTheme === "dark" || (titleBarTheme === "system" && nativeTheme.shouldUseDarkColors);
-  mainWindow.setBackgroundColor(useDarkTheme ? "#191a1d" : "#f7f7f8");
+  const backgroundColor = getWindowBackgroundColor();
+  mainWindow.setBackgroundColor(backgroundColor);
+  for (const browserWindow of browserWindows) {
+    browserWindow.setBackgroundColor(backgroundColor);
+  }
+}
+
+function openBrowserWindow(url) {
+  if (!/^https?:\/\//i.test(url)) {
+    return;
+  }
+
+  const browserWindow = new BrowserWindow({
+    width: 1120,
+    height: 760,
+    minWidth: 720,
+    minHeight: 520,
+    title: applicationTitle,
+    icon: applicationIcon,
+    backgroundColor: getWindowBackgroundColor(),
+    autoHideMenuBar: true,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true
+    }
+  });
+  browserWindows.add(browserWindow);
+  browserWindow.on("closed", () => browserWindows.delete(browserWindow));
+
+  browserWindow.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
+    openBrowserWindow(targetUrl);
+    return { action: "deny" };
+  });
+  browserWindow.on("page-title-updated", (event, title) => {
+    if (!title?.trim() || title === "my-agent-desktop") {
+      event.preventDefault();
+      browserWindow.setTitle(applicationTitle);
+    }
+  });
+  browserWindow.loadURL(url).catch(() => {
+    if (!browserWindow.isDestroyed()) {
+      browserWindow.setTitle(`${applicationTitle} - 页面加载失败`);
+    }
+  });
 }
 
 function createWindow() {
@@ -25,7 +77,7 @@ function createWindow() {
     minHeight: 640,
     backgroundColor: "#f6f7fb",
     frame: false,
-    icon: path.join(__dirname, "resources", "qian-agent.png"),
+    icon: applicationIcon,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -34,6 +86,10 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, "dist", "index.html"));
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    openBrowserWindow(url);
+    return { action: "deny" };
+  });
   updateWindowTheme();
 }
 

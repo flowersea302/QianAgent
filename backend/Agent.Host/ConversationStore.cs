@@ -104,6 +104,42 @@ namespace Agent.Host
             return true;
         }
 
+        public async Task<ConversationCompression> LoadCompressionAsync(string conversationId)
+        {
+            EnsureValidConversationId(conversationId);
+            var context = await LoadContextAsync(conversationId);
+            return new ConversationCompression(context.Summary, context.CompressedMessageCount);
+        }
+
+        public async Task SaveCompressionAsync(string conversationId, string summary, int compressedMessageCount)
+        {
+            EnsureValidConversationId(conversationId);
+            var context = await LoadContextAsync(conversationId);
+            context.Summary = summary;
+            context.CompressedMessageCount = Math.Max(0, compressedMessageCount);
+            context.ContextTokenCount = null;
+            context.TokenUsageMessageCount = 0;
+            context.TokenUsageModel = null;
+            await SaveContextAsync(conversationId, context);
+        }
+
+        public async Task<ConversationTokenUsage> LoadTokenUsageAsync(string conversationId)
+        {
+            EnsureValidConversationId(conversationId);
+            var context = await LoadContextAsync(conversationId);
+            return new ConversationTokenUsage(context.ContextTokenCount, context.TokenUsageMessageCount, context.TokenUsageModel);
+        }
+
+        public async Task SaveTokenUsageAsync(string conversationId, long contextTokenCount, int messageCount, string model)
+        {
+            EnsureValidConversationId(conversationId);
+            var context = await LoadContextAsync(conversationId);
+            context.ContextTokenCount = Math.Max(0, contextTokenCount);
+            context.TokenUsageMessageCount = Math.Max(0, messageCount);
+            context.TokenUsageModel = model;
+            await SaveContextAsync(conversationId, context);
+        }
+
         public Task DeleteConversationAsync(string conversationId)
         {
             EnsureValidConversationId(conversationId);
@@ -251,6 +287,16 @@ namespace Agent.Host
             public bool TitleIsManual { get; set; }
 
             public string? WorkspaceRoot { get; set; }
+
+            public string? Summary { get; set; }
+
+            public int CompressedMessageCount { get; set; }
+
+            public long? ContextTokenCount { get; set; }
+
+            public int TokenUsageMessageCount { get; set; }
+
+            public string? TokenUsageModel { get; set; }
         }
     }
 
@@ -259,4 +305,8 @@ namespace Agent.Host
     internal sealed record ConversationSessionLoadResult(AgentSession Session, bool WasRestored);
 
     internal sealed record ConversationMetadata(string? Title, string? WorkspaceRoot, bool TitleIsManual);
+
+    internal sealed record ConversationCompression(string? Summary, int CompressedMessageCount);
+
+    internal sealed record ConversationTokenUsage(long? ContextTokenCount, int MessageCount, string? Model);
 }

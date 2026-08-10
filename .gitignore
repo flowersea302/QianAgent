@@ -2,7 +2,7 @@
 **/bin/
 **/obj/
 backend/build-verify/
-backend/build-verify-parallel/
+backend/build-verify-*/
 backend/publish/
 desktop/node_modules/
 desktop/dist/
