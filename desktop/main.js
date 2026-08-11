@@ -110,9 +110,10 @@ function startHost() {
     return;
   }
 
+  const hostExecutable = process.platform === "win32" ? "Agent.Host.exe" : "Agent.Host";
   const hostPath = app.isPackaged
-    ? path.join(process.resourcesPath, "backend", "Agent.Host.exe")
-    : path.resolve(__dirname, "..", "backend", "Agent.Host", "bin", "Debug", "net10.0-windows", "Agent.Host.exe");
+    ? path.join(process.resourcesPath, "backend", hostExecutable)
+    : path.resolve(__dirname, "..", "backend", "Agent.Host", "bin", "Debug", "net10.0", hostExecutable);
   hostProcess = spawn(hostPath, [], { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
 
   readline.createInterface({ input: hostProcess.stdout }).on("line", (line) => {
@@ -190,6 +191,12 @@ nativeTheme.on("updated", () => {
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
     app.quit();
+  }
+});
+
+app.on("activate", () => {
+  if (BrowserWindow.getAllWindows().length === 0) {
+    createWindow();
   }
 });
 

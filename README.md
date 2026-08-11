@@ -25,4 +25,30 @@ npm.cmd install
 npm.cmd start
 ```
 
-The frontend starts `backend/Agent.Host/bin/Debug/net10.0/Agent.Host.exe` as a local child process. Configure the API endpoint, model, and API key in the desktop application. Do not commit API keys.
+On macOS, use npm instead of npm.cmd:
+
+~~~bash
+cd desktop
+npm install
+npm start
+~~~
+
+## Package
+
+Create a self-contained Windows portable executable:
+
+~~~powershell
+cd desktop
+npm.cmd run package:win
+~~~
+
+Create macOS DMG and ZIP packages on a Mac:
+
+~~~bash
+cd desktop
+npm run package:mac:arm64
+~~~
+
+Use npm run package:mac:x64 for Intel Macs. The self-contained backend is included, so end users do not need to install .NET. Unsigned builds may be blocked by Gatekeeper; public distribution requires an Apple Developer ID signature and notarization.
+
+The frontend starts the platform-specific Agent.Host executable from `backend/Agent.Host/bin/Debug/net10.0` as a local child process. Configure the API endpoint, model, and API key in the desktop application. Do not commit API keys.

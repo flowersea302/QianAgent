@@ -6,7 +6,12 @@
   "scripts": {
     "build": "vite build",
     "start": "dotnet build ../backend/Agent.Host/Agent.Host.csproj && npm run build && electron .",
-    "package:win": "npm run build && electron-builder --win portable"
+    "publish:win": "dotnet publish ../backend/Agent.Host/Agent.Host.csproj -c Release -r win-x64 --self-contained true -o ../backend/publish/win-x64",
+    "publish:mac:x64": "dotnet publish ../backend/Agent.Host/Agent.Host.csproj -c Release -r osx-x64 --self-contained true -o ../backend/publish/osx-x64",
+    "publish:mac:arm64": "dotnet publish ../backend/Agent.Host/Agent.Host.csproj -c Release -r osx-arm64 --self-contained true -o ../backend/publish/osx-arm64",
+    "package:win": "npm run publish:win && npm run build && electron-builder --config electron-builder.win.cjs --win portable --x64",
+    "package:mac:x64": "npm run publish:mac:x64 && npm run build && electron-builder --config electron-builder.mac-x64.cjs --mac dmg zip --x64",
+    "package:mac:arm64": "npm run publish:mac:arm64 && npm run build && electron-builder --config electron-builder.mac-arm64.cjs --mac dmg zip --arm64"
   },
   "dependencies": {
     "@lucide/vue": "^1.30.0",
@@ -18,28 +23,5 @@
     "electron": "33.4.11",
     "electron-builder": "^26.15.3",
     "vite": "^8.2.0"
-  },
-  "build": {
-    "appId": "com.flowersea.qianagent",
-    "productName": "QianAgent",
-    "directories": {
-      "output": "release"
-    },
-    "files": [
-      "dist/**/*",
-      "main.js",
-      "preload.js",
-      "package.json"
-    ],
-    "extraResources": [
-      {
-        "from": "../backend/publish/win-x64",
-        "to": "backend"
-      }
-    ],
-    "win": {
-      "target": "portable",
-      "icon": "resources/qian-agent.ico"
-    }
   }
 }
