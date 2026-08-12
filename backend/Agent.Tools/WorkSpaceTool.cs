@@ -51,12 +51,24 @@ namespace Agent.Tools
             return WorkSpaceState.Value?.Root ?? string.Empty;
         }
 
+        [Description("获取当前会话由用户选择的工作区。用户询问当前工作区、项目目录或文件生成位置时，必须使用此工具，不要使用进程当前目录代替工作区。")]
+        public static string GetCurrentWorkspace()
+        {
+            return RunWithToolProgress("get_current_workspace", "正在确认当前会话工作区", () =>
+            {
+                var workspaceRoot = GetWorkSpaceRoot();
+                return string.IsNullOrWhiteSpace(workspaceRoot)
+                    ? "当前会话尚未设置工作区。"
+                    : workspaceRoot;
+            });
+        }
+
         public static void ClearWorkSpaceRoot()
         {
             GetWorkSpaceContext().Root = null;
         }
 
-        [Description("获取当前工作目录")]
+        [Description("获取命令运行目录。此目录可能是应用程序目录，不代表用户选择的工作区；查询工作区时应使用 GetCurrentWorkspace。")]
         public static string GetCurrentPath()
         {
             return RunWithToolProgress("get_current_path", "正在确认当前目录", () =>

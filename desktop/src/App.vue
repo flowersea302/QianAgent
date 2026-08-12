@@ -392,6 +392,7 @@ function progressLabel(item) {
     execute_python: "运行脚本",
     execute_temporary_python: "运行脚本",
     get_current_path: "确认目录",
+    get_current_workspace: "确认工作区",
     set_workspace: "设置工作区"
   };
   return labels[item.toolName] || "执行工具";
